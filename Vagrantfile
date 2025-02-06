@@ -1,90 +1,83 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
-# All Vagrant configuration is done below. The "2" in Vagrant.configure
-# configures the configuration version (we support older styles for
-# backwards compatibility). Please don't change it unless you know what
-# you're doing.
 Vagrant.configure(2) do |config|
   config.vm.define "c2-dev"
   
-  # The most common configuration options are documented and commented below.
-  # For a complete reference, please see the online documentation at
-  # https://docs.vagrantup.com.
-
-  # Every Vagrant development environment requires a box. You can search for
-  # boxes at https://atlas.hashicorp.com/search.
-  config.vm.box = "bento/ubuntu-24.04"
-  config.vm.box_version = "202404.26.0"
+  config.vm.box = "hashicorp/bionic64"
   config.vm.hostname = "c2-dev"
 
-  # Disable automatic box update checking. If you disable this, then
-  # boxes will only be checked for updates when the user runs
-  # `vagrant box outdated`. This is not recommended.
-  # config.vm.box_check_update = false
+  config.ssh.username = "vagrant"
+  config.ssh.password = "vagrant"
 
-  # Create a forwarded port mapping which allows access to a specific port
-  # within the machine from a port on the host machine. In the example below,
-  # accessing "localhost:8080" will access port 80 on the guest machine.
-  config.vm.network "forwarded_port", guest: 80, host: 8080
-  config.vm.network "forwarded_port", guest: 91, host: 9191 # encryption
+  config.vm.network "forwarded_port", guest: 80, host: 8081  # Changed host port to 8081
+  config.vm.network "forwarded_port", guest: 91, host: 9192  # Changed host port to 9192
+  config.vm.network "forwarded_port", guest: 9191, host: 9191  # Changed host port to 9192
   
-  # Create a private network, which allows host-only access to the machine
-  # using a specific IP.
-  # config.vm.network "private_network", ip: "192.168.33.10"
+  config.vm.network "private_network", ip: "192.168.33.10"
 
-  # Create a public network, which generally matched to bridged network.
-  # Bridged networks make the machine appear as another physical device on
-  # your network.
-  config.vm.network "public_network", bridge: "en0: Wi-Fi"
+  # Specify the exact network interface name for the public network bridge
+  config.vm.network "public_network", bridge: "Intel(R) Dual Band Wireless-AC 3165"
 
-  # Share an additional folder to the guest VM. The first argument is
-  # the path on the host to the actual folder. The second argument is
-  # the path on the guest to mount the folder. And the optional third
-  # argument is a set of non-required options.
-  config.vm.synced_folder "../", "/opt/c2/"
+  config.vm.synced_folder "../encryption-dev", "/opt/c2/encryption"
 
-  # Provider-specific configuration so you can fine-tune various
-  # backing providers for Vagrant. These expose provider-specific options.
-  # Example for VirtualBox:
-  #
   config.vm.provider "virtualbox" do |vb|
-  # Display the VirtualBox GUI when booting the machine
-  # vb.gui = true
-  
-  # Customize the amount of memory on the VM:
-  vb.memory = "1024"
-
-  # set auto_update to false, if you do NOT want to check the correct 
-  # additions version when booting this machine
-  config.vbguest.auto_update = false
-  
-  # do NOT download the iso file from a webserver
-  config.vbguest.no_remote = true
+    vb.memory = "4096"
   end
-  #
-  # View the documentation for the provider you are using for more
-  # information on available options.
 
-  # Define a Vagrant Push strategy for pushing to Atlas. Other push strategies
-  # such as FTP and Heroku are also available. See the documentation at
-  # https://docs.vagrantup.com/v2/push/atlas.html for more information.
-  # config.push.define "atlas" do |push|
-  #   push.app = "YOUR_ATLAS_USERNAME/YOUR_APPLICATION_NAME"
-  # end
+  config.vm.provision "shell", inline: <<-SHELL
+  sudo apt-get update
+  sudo sysctl net.ipv6.conf.all.disable_ipv6=1
+  sudo apt-get install -y software-properties-common
+  sudo add-apt-repository ppa:ondrej/php -y
+  sudo apt-get update
+  sudo apt-get install -y php7.2 php7.2-fpm php7.2-cli php7.2-mbstring php7.2-xml
+  sudo apt-get install -y nginx
 
-  # Enable provisioning with a shell script. Additional provisioners such as
-  # Puppet, Chef, Ansible, Salt, and Docker are also available. Please see the
-  # documentation for more information about their specific syntax and use.
-  # config.vm.provision "shell", inline: <<-SHELL
-  #   sudo apt-get update
-  #   sudo apt-get install -y apache2
-  # SHELL
-  # config.vm.provision "fix-no-tty", type: "shell" do |s|
-  #     s.privileged = false
-  #     s.inline = "sudo sed -i '/tty/!s/mesg n/tty -s \\&\\& mesg n/' /root/.profile"
-  # end
+  # Install mcrypt dependencies
+  sudo apt-get install -y libmcrypt-dev php-pear php7.2-dev
+  sudo pecl install mcrypt-1.0.1
+
+  # Enable mcrypt extension
+  echo "extension=mcrypt.so" | sudo tee /etc/php/7.2/fpm/php.ini
+  sudo phpenmod mcrypt
+
+  sudo mkdir -p /etc/nginx/sites-available
+  sudo mkdir -p /etc/nginx/sites-enabled
+
+  sudo bash -c 'cat > /etc/nginx/sites-available/default' << EOF
+  server {
+    listen 9191;
+    root /opt/c2/encryption/public;
+    index index.php index.html index.htm;
+    server_name localhost;
+
+    client_max_body_size 100M;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \\.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php7.2-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+  }
+EOF
+
+  sudo sed -i 's|location ~ .php$ {|location ~ \\.php$ {|' /etc/nginx/sites-available/default
+  sudo sed -i 's|try_files .*|try_files \\$uri \\$uri/ /index.php?\\$args;|' /etc/nginx/sites-available/default
+  sudo sed -i 's|fastcgi_param SCRIPT_FILENAME .*|fastcgi_param SCRIPT_FILENAME \\$document_root\\$fastcgi_script_name;|' /etc/nginx/sites-available/default
+  sudo ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/
+
+  sudo systemctl enable php7.2-fpm
+  sudo systemctl start php7.2-fpm
+  sudo systemctl enable nginx
+  sudo systemctl start nginx
+SHELL
+
+
   config.vm.provision :shell, :path => "provision/shell/c2.sh"
   config.vm.provision :shell, :path => "provision/shell/nginx.sh"
-  
 end
